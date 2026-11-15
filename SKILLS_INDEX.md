@@ -9,13 +9,13 @@ Use this index before starting any task: if a skill or workflow is already liste
 | Skill | Path in repo | Description | Status | Date |
 |-------|-------------|-------------|--------|------|
 | `memory-archive` | `skills/memory-archive/SKILL.md` | Repository for facts evicted from persistent memory | Active | 2026-11-16 |
-| `timesheet-workflow-automation` | `skills/timesheet-workflow-automation/SKILL.md` | FlowAce CSV → weekly sheet → Word report → email drafts | Active | 2026-11-16 |
+| `timesheet-workflow-automation` | `skills/timesheet-workflow-automation/SKILL.md` | FlowAce CSV → weekly sheet → Word report → email drafts → zip drafts → send via Gmail | Active | 2026-11-16 |
 
 ## Scripts (in this repo)
 
 | Script | Path in repo | Description | Status | Date |
 |--------|-------------|-------------|--------|------|
-| `flowace_weekly_automation.py` | `scripts/flowace_weekly_automation.py` | End-to-end timesheet automation (verified end-to-end with 2026-11-13 CSV) | Active | 2026-11-16 |
+| `flowace_weekly_automation.py` | `scripts/flowace_weekly_automation.py` | End-to-end timesheet automation: CSV parse → Drive backup → weekly tab fill → violation analysis → Word report → email drafts → zip drafts → send report + zip via Gmail API (verified end-to-end with 2026-11-13 CSV) | Active | 2026-11-16 |
 
 ## Persistent memory entries (active, in Hermes memory store)
 

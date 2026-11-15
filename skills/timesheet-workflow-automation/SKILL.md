@@ -34,12 +34,15 @@ Do not use this skill for one-off CSV conversions, single-email composition, or 
 5. Analyze idle (>15 min) and undertime (>5 min) violations against scheduled hours.
 6. Generate a Word report (exec summary, findings table, attendance overview, exception details, management notes).
 7. Fill email templates from `.eml` sources as `X-Unsent: 1` drafts for **the user to review before sending** — never send automatically.
+8. **Zip the draft `.eml` files** into a single archive (`draft_emails_YYYY-MM-DD.zip`).
+9. **Send the Word report + zip via Gmail API** to fahad@ffgp.ca (from `eerecords@ffgp.ca`). The drafts inside the zip remain pre-addressed for review before any manual send.
 
 ## Prerequisites
 
 - Google Workspace OAuth authenticated for the active Hermes profile: `python <HERMES_HOME>/profiles/<profile>/skills/productivity/google-workspace/scripts/setup.py --check` must print `AUTHENTICATED`.
 - Python packages `openpyxl` and `python-docx` installed (`pip install openpyxl python-docx`).
 - The daily export CSV and the email templates (`template_idle.eml`, `template_undertime.eml`) available on disk.
+- Gmail API scope (`gmail.send`) included in the OAuth token.
 
 ## Procedure
 
@@ -80,7 +83,7 @@ Download the master xlsx via `drive.files().get_media(fileId=MASTER_FILE_ID)` in
 - Header row: name_row + 2, columns C..P = Scheduled Hours, Login Time, Logout Time, Actual Time, Matter Time, Non Mater Time, Manual Entries, Idle Time, Total hrs rendered, Undertime, OverTime Work, ECC Report Submitted, ...
 - Day rows: name_row + 3 .. + 7 (Mon..Fri). Column C = scheduled (datetime.time), D = login, E = logout, F = actual, H = non-matter, J = idle, N = ECC Report Submitted.
 
-For each CSV employee, find their block by name (case-insensitive contains match as fallback). Within the block, find the open day row whose Login (D) and Logout (E) are empty but Scheduled (C) is set. Write:
+For each CSV employee, find their block by name (case-insensitive contains match as fallback). Within the block, find the open day row whose Login (D) and Logout (E) are empty but Scheduled (C) is set. If no such row exists (all day rows already have Login/Logout populated), skip the employee — do not overwrite an already-filled day row. Write:
 - D = start.time(), E = end.time()
 - F = logged as a `datetime.time`, H = same
 - J = idle as a `datetime.time`
@@ -131,6 +134,29 @@ Load `template_idle.eml` and `template_undertime.eml`. Replace placeholders:
 
 Save as `draft_<idle|undertime>_<Name>_<YYYY-MM-DD>.eml`. **Do not send** — the user reviews drafts first.
 
+### Step 8 — Zip draft emails
+
+Zip all `.eml` drafts into a single archive so the `.eml` extensions are preserved exactly:
+
+```python
+import zipfile
+zip_path = output_dir / f"draft_emails_{report_date:%Y-%m-%d}.zip"
+with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    for eml in draft_paths:
+        zf.write(eml, arcname=eml.name)
+```
+
+### Step 9 — Send report + zip via Gmail API
+
+Send the Word report and the zip of draft emails via the Gmail API using raw HTTP (the `build_service` discovery wrapper can fail on Gmail, so raw HTTP is used):
+
+- **To:** fahad@ffgp.ca
+- **From:** eerecords@ffgp.ca (note: Gmail may rewrite this to the authenticated account unless "Send as" is configured)
+- **Attachments:** `Work_Attendance_Report_YYYY-MM-DD.docx` and `draft_emails_YYYY-MM-DD.zip`
+- **Body:** Brief note explaining the attachments and that drafts are for review before sending
+
+The draft `.eml` files inside the zip are pre-addressed and pre-filled; they are **not** sent automatically — the user reviews them first.
+
 ## Pitfalls
 
 - **Time cells are `datetime.time`, not `datetime`, `timedelta`, or `openpyxl.utils.datetime.to_excel()`.** openpyxl reads/writes sheet time-formatted columns (C scheduled, D login, E logout, F actual, H non-matter, J idle) as `datetime.time` objects. `to_excel()` writes an Excel serial date number, which breaks time-formatted cells and the sheet's duration formulas. Writing a `timedelta` or `datetime` also corrupts the cell. Convert durations with `time(hour, minute, second)` derived from `total_seconds() % 86400`.
@@ -151,6 +177,7 @@ Save as `draft_<idle|undertime>_<Name>_<YYYY-MM-DD>.eml`. **Do not send** — th
 ## Related
 
 - `google-workspace` — underlying Drive/Gmail/Sheets API mechanics and OAuth setup. Load that skill for credential setup and API command reference; this skill defines the business workflow that calls it.
+- `references/gmail-api-raw-http.md` — Gmail API raw HTTP send technique used when the `build_service` discovery wrapper is unavailable.
 
 ## Example invocation
 

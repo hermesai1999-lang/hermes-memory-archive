@@ -22,16 +22,20 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import re
 import sys
+import zipfile
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from urllib import request as urlrequest
 
 from openpyxl import load_workbook
 from openpyxl.utils.datetime import to_excel
 from docx import Document
 from docx.shared import Pt
+from google.oauth2.credentials import Credentials
 
 # --- Google Workspace (Hermes-managed OAuth) -------------------------------
 SCRIPTS_DIR = r"C:\Users\Administrator\AppData\Local\hermes\profiles\coding-sensei\skills\productivity\google-workspace\scripts"
@@ -51,6 +55,8 @@ TEMPLATES = {
 
 MASTER_FILE_ID = "1pTciNn-haOW6UcwtqVMCAE5ZTploaFc5"  # Weekly Time Tracking Employee Report.xlsx
 MASTER_NAME = "Weekly Time Tracking Employee Report.xlsx"
+TOKEN_PATH = r"C:\Users\Administrator\AppData\Local\hermes\profiles\coding-sensei\google_token.json"
+SEND_TO = "fahad@ffgp.ca"
 
 IDLE_LIMIT = timedelta(minutes=15)
 UNDERTIME_LIMIT = timedelta(minutes=5)
@@ -572,22 +578,84 @@ def write_email_drafts(analysis: dict, records: list[dict], out_dir: Path):
     return written
 
 
+# --- Step 8: Zip draft emails ----------------------------------------------
+def zip_draft_emails(draft_paths: list[Path], output_dir: Path, report_date: date) -> Path:
+    """Zip all .eml drafts into a single archive."""
+    zip_path = output_dir / f"draft_emails_{report_date:%Y-%m-%d}.zip"
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for eml in draft_paths:
+            if eml.exists():
+                zf.write(eml, arcname=eml.name)
+                print(f"    Zipped: {eml.name}")
+            else:
+                print(f"    WARNING: not found, skipping: {eml.name}")
+    print(f"    Zip created: {zip_path}")
+    return zip_path
+
+
+# --- Step 9: Send report + zip via Gmail API --------------------------------
+def send_report_email(
+    to_addr: str,
+    subject: str,
+    body_text: str,
+    attachments: list[Path],
+    token_path: str = TOKEN_PATH,
+) -> str:
+    """Send an email with attachments via the Gmail API (raw HTTP)."""
+    creds = Credentials.from_authorized_user_file(token_path)
+    if creds.expired and creds.refresh_token:
+        creds.refresh(__import__("google.auth.transport.requests", fromlist=["Request"]).Request())
+        Path(token_path).write_text(
+            json.dumps(json.loads(creds.to_json()), indent=2), encoding="utf-8"
+        )
+    access_token = creds.token
+
+    msg = MIMEMultipart()
+    msg["To"] = to_addr
+    msg["From"] = "eerecords@ffgp.ca"
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body_text, "plain"))
+
+    for att_path in attachments:
+        with open(att_path, "rb") as f:
+            part = MIMEApplication(f.read(), Name=att_path.name)
+        part["Content-Disposition"] = f'attachment; filename="{att_path.name}"'
+        msg.attach(part)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+    body_json = json.dumps({"raw": raw}).encode("utf-8")
+    req = urlrequest.Request(
+        url,
+        data=body_json,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urlrequest.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode())
+    print(f"    EMAIL SENT: message id {result.get('id')}")
+    return str(result.get("id"))
+
+
 # --- Main ------------------------------------------------------------------
 def main(argv: list[str]) -> int:
     csv_path = Path(argv[1]) if len(argv) > 1 else find_latest_csv()
-    print(f"[1/7] Parsing FlowAce CSV: {csv_path}")
+    print(f"[1/9] Parsing FlowAce CSV: {csv_path}")
     data = parse_flowace_csv(csv_path)
     report_date = data["report_date"]
     records = data["employees"]
     print(f"    Report date: {report_date}  |  {len(records)} employees in CSV")
 
     tab = week_tab_name(report_date)
-    print(f"[2/7] Weekly tab: {tab}")
+    print(f"[2/9] Weekly tab: {tab}")
 
     scratch = Path(r"C:\Users\Administrator\AppData\Local\hermes\profiles\coding-sensei\cache\scratch")
     src_xlsx = scratch / f"Weekly_Time_Tracking_Employee_Report_{report_date:%Y-%m-%d}.xlsx"
 
-    print(f"[3/7] Downloading master workbook from Drive ({MASTER_FILE_ID})")
+    print(f"[3/9] Downloading master workbook from Drive ({MASTER_FILE_ID})")
     drive = build_service("drive", "v3")
     request = drive.files().get_media(fileId=MASTER_FILE_ID)
     with io.FileIO(src_xlsx, "wb") as fh:
@@ -597,7 +665,7 @@ def main(argv: list[str]) -> int:
             _, done = downloader.next_chunk()
     print(f"    Downloaded {src_xlsx.stat().st_size} bytes")
 
-    print(f"[4/7] Filling {tab} tab with {report_date:%A} records")
+    print(f"[4/9] Filling {tab} tab with {report_date:%A} records")
     wb = load_workbook(src_xlsx)
     if tab not in wb.sheetnames:
         print(f"    ERROR: week tab '{tab}' not in workbook. Tabs: {wb.sheetnames[:10]} ...")
@@ -636,27 +704,48 @@ def main(argv: list[str]) -> int:
 
     wb.save(src_xlsx)
 
-    print(f"[5/7] Uploading updated workbook to Drive (backup first)")
+    print(f"[5/9] Uploading updated workbook to Drive (backup first)")
     drive_backup_and_upload(src_xlsx)
 
-    print(f"[6/7] Analysing violations (idle > 15m, undertime > 5m vs scheduled)")
+    print(f"[6/9] Analysing violations (idle > 15m, undertime > 5m vs scheduled)")
     analysis = analyse(records, blocks, report_date)
     print(f"    Idle violations: {len(analysis['idle_violations'])}")
     print(f"    Undertime violations: {len(analysis['undertime_violations'])}")
     print(f"    Missing hours: {len(analysis['missing'])}")
 
-    print(f"[7/7] Generating Word report and email drafts")
+    print(f"[7/9] Generating Word report and email drafts")
     report_path = OUTPUT_DIR / f"Work_Attendance_Report_{report_date:%Y-%m-%d}.docx"
     write_word_report(analysis, blocks, records, report_path)
 
     drafts = write_email_drafts(analysis, records, OUTPUT_DIR)
     print(f"    Email drafts: {len(drafts)}")
 
+    print(f"[8/9] Zipping draft emails")
+    zip_path = zip_draft_emails(drafts, OUTPUT_DIR, report_date)
+
+    print(f"[9/9] Sending report + drafts to {SEND_TO}")
+    body_text = (
+        f"Hi Fahad,\n\n"
+        f"Please find attached the Work & Attendance Report for {report_date:%A, %B %d, %Y},\n"
+        f"along with a zip file containing the pre-filled email drafts for the idle-time\n"
+        f"and undertime violations.\n\n"
+        f"Attachments:\n"
+        f"1. Work_Attendance_Report_{report_date:%Y-%m-%d}.docx — full attendance report\n"
+        f"2. draft_emails_{report_date:%Y-%m-%d}.zip — .eml drafts ready for review before sending\n\n"
+        f"The .eml drafts are pre-addressed; please review before sending.\n\n"
+        f"Best regards,\nHermes (Coding Sensei)"
+    )
+    send_report_email(
+        to_addr=SEND_TO,
+        subject=f"Work & Attendance Report — {report_date:%A, %B %d, %Y} (with draft emails in zip)",
+        body_text=body_text,
+        attachments=[report_path, zip_path],
+    )
+
     print("\nDONE.")
     print(f"  Report : {report_path}")
-    for d in drafts:
-        print(f"  Draft  : {d}")
-    print("\nNext: open the draft .eml files, review, then send from your mail client.")
+    print(f"  Zip    : {zip_path}")
+    print(f"\nNext: review the draft .eml files inside the zip, then send from your mail client if needed.")
     return 0
 
 
