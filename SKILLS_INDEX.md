@@ -10,6 +10,7 @@ Use this index before starting any task: if a skill or workflow is already liste
 |-------|-------------|-------------|--------|------|
 | `memory-archive` | `skills/memory-archive/SKILL.md` | Repository for facts evicted from persistent memory | Active | 2026-11-16 |
 | `timesheet-workflow-automation` | `skills/timesheet-workflow-automation/SKILL.md` | FlowAce CSV → weekly sheet → Word report → email drafts → zip drafts → send via Gmail | Active | 2026-11-16 |
+| `drive-upload-document` | `skills/drive-upload-document/SKILL.md` | Upload a Word document to Google Drive via CLI scripts | Active | 2026-11-16 |
 
 ## Scripts (in this repo)
 
